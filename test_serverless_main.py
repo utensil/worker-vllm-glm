@@ -38,7 +38,7 @@ class HealthyResponse:
 
 
 class ServerlessMainTest(unittest.TestCase):
-    def test_command_is_pinned_tp1_and_loopback(self):
+    def test_command_defaults_to_tp1_and_loopback(self):
         argv = main.build_vllm_argv()
         joined = " ".join(argv)
         self.assertIn(main.MODEL, argv)
@@ -47,6 +47,20 @@ class ServerlessMainTest(unittest.TestCase):
         self.assertIn("--tensor-parallel-size 1", joined)
         self.assertIn("--max-model-len 8192", joined)
         self.assertIn("--no-enable-flashinfer-autotune", argv)
+
+    def test_command_accepts_explicit_tp2(self):
+        with mock.patch.dict(main.os.environ, {"TENSOR_PARALLEL_SIZE": "2"}):
+            argv = main.build_vllm_argv()
+        self.assertIn("--tensor-parallel-size 2", " ".join(argv))
+
+    def test_command_rejects_invalid_tensor_parallel_size(self):
+        for value in ("0", "9", "two"):
+            with (
+                self.subTest(value=value),
+                mock.patch.dict(main.os.environ, {"TENSOR_PARALLEL_SIZE": value}),
+                self.assertRaisesRegex(RuntimeError, "TENSOR_PARALLEL_SIZE"),
+            ):
+                main.build_vllm_argv()
 
     def test_health_gate_succeeds_only_on_200(self):
         with mock.patch.object(

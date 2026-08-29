@@ -190,11 +190,39 @@ cold start, model listing, chat completion, and negative request; endpoint
 deletion; and a fresh absence check. Until then, this repository makes no
 Serverless deployment, quality, latency, throughput, or cost claim.
 
+## 2xB200 TP2 Serverless feasibility candidate
+
+`create_serverless_b200_template.py` defines a distinct public candidate named
+`GLM-5.3-Flash-NVFP4 (Public Serverless 2xB200 TP2)`. It reuses the same
+reviewed queue worker while setting `TENSOR_PARALLEL_SIZE=2`; the B300 template
+continues to omit that variable and therefore retains the worker's TP1 default.
+
+The B200 endpoint renderer fails closed unless a live catalog query for exactly
+two `NVIDIA B200` GPUs admits CUDA 13.0, a Serverless pool, a positive finite
+price, and `LOW`, `MEDIUM`, or `HIGH` availability. It pins count 2, excludes
+every other type in the selected pool, permits only one worker, and never falls
+back to another GPU count or type. TP2 remains unproven until its bounded live
+cold-start, model-list, and chat checks pass.
+
+No-spend render and exact live-catalog check:
+
+```bash
+python3 create_serverless_b200_template.py
+python3 create_serverless_b200_template.py --check-gpu
+```
+
+Template creation remains digest-locked. After CI publishes the B200-tagged
+Serverless image and `IMAGE` is replaced by that immutable digest,
+`--create` creates or reuses only the distinct B200 template and verifies every
+persisted field. It does not alter the existing B300 template or create an
+endpoint.
+
 ## Build
 
 GitHub Actions tests every change. Image-source changes build the default `pod`
 target and the separate `serverless` target for `linux/amd64`. Pod tags remain
 `latest` and `glm-5.3-flash-nvfp4-v1`; the Serverless target uses
-`glm-5.3-flash-nvfp4-serverless-v1`. Deployment uses immutable digests. The
+`glm-5.3-flash-nvfp4-serverless-v1` and
+`glm-5.3-flash-nvfp4-serverless-b200-tp2-v1`. Deployment uses immutable digests. The
 repository and package must remain public so RunPod can pull either image
 without registry credentials.

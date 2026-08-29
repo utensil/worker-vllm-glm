@@ -51,6 +51,7 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
 
 
 def build_vllm_argv() -> list[str]:
+    tensor_parallel_size = _bounded_int("TENSOR_PARALLEL_SIZE", 1, 1, 8)
     max_model_len = _bounded_int("MAX_MODEL_LEN", 8192, 1024, 131072)
     max_num_seqs = _bounded_int("MAX_NUM_SEQS", 2, 1, 64)
     gpu_memory = _bounded_float("GPU_MEMORY_UTILIZATION", 0.90, 0.50, 0.98)
@@ -69,7 +70,7 @@ def build_vllm_argv() -> list[str]:
         "--port",
         str(PORT),
         "--tensor-parallel-size",
-        "1",
+        str(tensor_parallel_size),
         "--max-model-len",
         str(max_model_len),
         "--max-num-seqs",

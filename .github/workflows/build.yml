@@ -54,5 +54,7 @@ jobs:
           target: serverless
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-v1
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-v1
+            ghcr.io/${{ github.repository_owner }}/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-b200-tp2-v1
           provenance: false
