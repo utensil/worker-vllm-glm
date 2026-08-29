@@ -78,11 +78,15 @@ one basic chat completion on one B300. It is not yet a full quality, multimodal,
 tool-use, long-context, concurrency, cost-efficiency, or optimized-production
 evaluation.
 
-This repository currently publishes a **Pod** image/template only. The vLLM HTTP
-server has passed its Pod feasibility smoke. A separate Serverless queue-worker
-target now exists, but its image, public template, endpoint cold start, and
-request paths remain **candidate artifacts until the independent live gates
-below pass**.
+This repository publishes the proven **Pod** image/template and a separately
+reviewed Serverless queue-worker image. The Serverless image is pinned at:
+
+```text
+ghcr.io/utensil/worker-vllm-glm@sha256:3f31ef919c98ad370f4bfdddafd6f20ae92f1208fc96616bb1e9cbd877e09c09
+```
+
+The Serverless endpoint cold start and request paths remain **unvalidated until
+the independent live gates below pass**.
 
 ## Serverless candidate (not yet live-validated)
 

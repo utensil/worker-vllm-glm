@@ -22,7 +22,10 @@ import requests
 REST = "https://rest.runpod.io/v1"
 API_V2 = "https://api.runpod.io/v2"
 GRAPHQL = "https://api.runpod.io/graphql"
-IMAGE = "ghcr.io/utensil/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-v1"
+IMAGE = (
+    "ghcr.io/utensil/worker-vllm-glm@"
+    "sha256:3f31ef919c98ad370f4bfdddafd6f20ae92f1208fc96616bb1e9cbd877e09c09"
+)
 NAME = "GLM-5.3-Flash-NVFP4 (Public Serverless 1xB300 TP1)"
 GPU_TYPE_ID = "NVIDIA B300 SXM6 AC"
 CUDA_VERSION = "13.0"
