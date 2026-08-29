@@ -1,0 +1,8 @@
+.git
+.github
+__pycache__
+*.pyc
+test_public_artifact.py
+create_pod_template.py
+README.md
+LICENSE
