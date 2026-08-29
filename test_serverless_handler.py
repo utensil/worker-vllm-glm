@@ -152,6 +152,26 @@ class ServerlessHandlerTest(unittest.TestCase):
             )
         self.assertEqual(chunks, ['data: {"choices":[]}\n\n', "data: [DONE]\n\n"])
 
+    def test_sse_streaming_preserves_utf8_split_across_transport_chunks(self):
+        event = 'data: {"delta":"\u4f60"}\n\n'.encode()
+        split_at = event.index("\u4f60".encode()) + 1
+        response = FakeResponse(chunks=[event[:split_at], event[split_at:]])
+        with mock.patch.object(
+            handler.aiohttp, "ClientSession", return_value=FakeSession(response)
+        ):
+            chunks = asyncio.run(
+                collect(
+                    {
+                        "input": {
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "stream": True,
+                        }
+                    }
+                )
+            )
+        self.assertEqual("".join(chunks), event.decode())
+        self.assertNotIn("\ufffd", "".join(chunks))
+
     def test_nonstream_json_accumulates_multiple_transport_chunks_to_eof(self):
         response = FakeResponse(read_chunks=[b'{"id":', b'"split",', b'"value":4}'])
         with mock.patch.object(

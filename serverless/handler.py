@@ -9,6 +9,7 @@ completions. RunPod's OpenAI-compatible route uses ``openai_route`` and
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import os
@@ -161,8 +162,14 @@ async def _proxy(spec: RequestSpec) -> AsyncIterator[Any]:
                 )
                 return
             if spec.stream:
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                 async for chunk in response.content.iter_any():
-                    yield chunk.decode("utf-8", errors="replace")
+                    text = decoder.decode(chunk, final=False)
+                    if text:
+                        yield text
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    yield tail
                 return
             chunks: list[bytes] = []
             payload_size = 0
