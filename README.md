@@ -230,12 +230,45 @@ The published B200/TP2 Serverless image is pinned at:
 ghcr.io/utensil/worker-vllm-glm@sha256:7a39b66b69597bddfc06106d3c74daf959b447c48b9cc1c46b0b45bfbcc9e529
 ```
 
+### Cached-model correction
+
+The volume-free check spent almost its entire window downloading and loading
+the checkpoint. `create_serverless_b200_cached_template.py` therefore defines
+a separate fail-closed template that requires RunPod's Hugging Face model
+cache. It resolves only snapshot revision
+`36c184c6cda000a481711306df5adde42f63321a`; if that exact local snapshot is
+missing, the worker exits instead of downloading at runtime.
+
+After the cached image digest and template are published, attach the exact
+model reference when creating the endpoint with runpodctl 2.4.0 or newer:
+
+```bash
+runpodctl serverless create \
+  --template-id CACHED_TEMPLATE_ID \
+  --name glm53-b200-tp2-cached-validation \
+  --gpu-id "NVIDIA B200" \
+  --gpu-count 2 \
+  --min-cuda-version 13.0 \
+  --workers-min 0 \
+  --workers-max 1 \
+  --scale-by delay \
+  --scale-threshold 1 \
+  --idle-timeout 300 \
+  --execution-timeout 1800 \
+  --model-reference \
+    https://huggingface.co/RedHatAI/GLM-5.3-Flash-NVFP4:36c184c6cda000a481711306df5adde42f63321a
+```
+
+The public template intentionally contains no token. The checkpoint is public,
+so an `HF_TOKEN` is neither required nor stored.
+
 ## Build
 
 GitHub Actions tests every change. Image-source changes build the default `pod`
 target and the separate `serverless` target for `linux/amd64`. Pod tags remain
 `latest` and `glm-5.3-flash-nvfp4-v1`; the Serverless target uses
 `glm-5.3-flash-nvfp4-serverless-v1` and
-`glm-5.3-flash-nvfp4-serverless-b200-tp2-v1`. Deployment uses immutable digests. The
-repository and package must remain public so RunPod can pull either image
-without registry credentials.
+`glm-5.3-flash-nvfp4-serverless-b200-tp2-v1`, plus the cached-model variant
+`glm-5.3-flash-nvfp4-serverless-b200-tp2-cached-v1`. Deployment uses immutable
+digests. The repository and package must remain public so RunPod can pull each
+image without registry credentials.
