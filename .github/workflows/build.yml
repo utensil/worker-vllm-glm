@@ -1,4 +1,4 @@
-name: Build and publish GLM vLLM image
+name: Build and publish GLM vLLM images
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
     paths:
       - Dockerfile
       - patch_glm5next_processor.py
+      - serverless/**
+      - .github/workflows/build.yml
   workflow_dispatch:
 
 jobs:
@@ -33,13 +35,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push Pod image
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: pod
           platforms: linux/amd64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/worker-vllm-glm:latest
             ghcr.io/${{ github.repository_owner }}/worker-vllm-glm:glm-5.3-flash-nvfp4-v1
+          provenance: false
+
+      - name: Build and push Serverless image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: serverless
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-v1
           provenance: false
