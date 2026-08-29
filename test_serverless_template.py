@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 import create_serverless_template as template
 
@@ -16,9 +17,21 @@ class FakeResponse:
 class FakeSession:
     def __init__(self, gpus):
         self.gpus = gpus
+        self.get_calls = []
 
-    def get(self, _url, **_kwargs):
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
         return FakeResponse({"gpus": self.gpus})
+
+
+def admitted_gpu(gpu_id, pool="BLACKWELL", price=6.0):
+    return {
+        "id": gpu_id,
+        "pool": pool,
+        "price": {"serverless": price},
+        "availability": "HIGH",
+        "cudaVersions": [{"version": "13.0", "available": True}],
+    }
 
 
 class ServerlessTemplateTest(unittest.TestCase):
@@ -42,40 +55,101 @@ class ServerlessTemplateTest(unittest.TestCase):
             "ghcr.io/utensil/worker-vllm-glm@sha256:" + "a" * 64
         )
 
+    def test_template_reuse_is_independent_of_gpu_catalog(self):
+        expected = template.payload()
+        expected["imageName"] = "ghcr.io/utensil/worker-vllm-glm@sha256:" + "a" * 64
+        stored = dict(expected, id="public-template")
+        with (
+            mock.patch.object(template, "_templates", return_value=[stored]),
+            mock.patch.object(
+                template,
+                "exact_serverless_gpu_selection",
+                side_effect=AssertionError("template path must not read GPU catalog"),
+            ),
+        ):
+            template_id, action = template.create_or_reuse(
+                expected, "redacted", mock.Mock()
+            )
+        self.assertEqual((template_id, action), ("public-template", "reused"))
+
     def test_exact_b300_gate_builds_pool_exclusions(self):
         gpus = [
-            {
-                "id": template.GPU_TYPE_ID,
-                "pool": "BLACKWELL",
-                "price": {"serverless": 6.0},
-            },
-            {
-                "id": "NVIDIA B200",
-                "pool": "BLACKWELL",
-                "price": {"serverless": 4.0},
-            },
-            {"id": "NVIDIA H200", "pool": "HOPPER", "price": {"serverless": 3.0}},
+            admitted_gpu(template.GPU_TYPE_ID),
+            admitted_gpu("NVIDIA B200", price=4.0),
+            admitted_gpu("NVIDIA H200", pool="HOPPER", price=3.0),
         ]
-        selection = template.exact_serverless_gpu_selection(
-            FakeSession(gpus), "redacted"
-        )
+        session = FakeSession(gpus)
+        selection = template.exact_serverless_gpu_selection(session, "redacted")
         self.assertEqual(selection["pools"], ["BLACKWELL"])
         self.assertEqual(selection["excludedTypes"], ["NVIDIA B200"])
         self.assertEqual(selection["count"], 1)
+        self.assertEqual(selection["allowedCudaVersions"], ["13.0"])
+        self.assertEqual(session.get_calls[0][1]["params"]["cudaVersions"], "13.0")
 
     def test_exact_b300_gate_does_not_substitute(self):
-        gpus = [
-            {"id": "NVIDIA B200", "pool": "BLACKWELL", "price": {"serverless": 4.0}}
-        ]
+        gpus = [admitted_gpu("NVIDIA B200", price=4.0)]
         with self.assertRaisesRegex(
             SystemExit, "exact Serverless GPU type unavailable"
         ):
             template.exact_serverless_gpu_selection(FakeSession(gpus), "redacted")
 
     def test_exact_b300_must_be_admitted_to_serverless(self):
-        gpus = [{"id": template.GPU_TYPE_ID, "pool": None, "price": {}}]
+        gpu = admitted_gpu(template.GPU_TYPE_ID)
+        gpu.update({"pool": None, "price": {}})
+        gpus = [gpu]
         with self.assertRaisesRegex(SystemExit, "not admitted"):
             template.exact_serverless_gpu_selection(FakeSession(gpus), "redacted")
+
+    def test_exact_b300_availability_none_fails_closed(self):
+        gpu = admitted_gpu(template.GPU_TYPE_ID)
+        gpu["availability"] = "NONE"
+        with self.assertRaisesRegex(SystemExit, "no current Serverless availability"):
+            template.exact_serverless_gpu_selection(FakeSession([gpu]), "redacted")
+
+    def test_exact_b300_requires_available_cuda_13(self):
+        gpu = admitted_gpu(template.GPU_TYPE_ID)
+        gpu["cudaVersions"] = [
+            {"version": "13.0", "available": False},
+            {"version": "13.2", "available": True},
+        ]
+        with self.assertRaisesRegex(SystemExit, "lacks available CUDA 13.0"):
+            template.exact_serverless_gpu_selection(FakeSession([gpu]), "redacted")
+
+    def test_temporary_endpoint_pins_admitted_selection_and_bounds_compute(self):
+        selection = {
+            "pools": ["BLACKWELL"],
+            "excludedTypes": ["NVIDIA B200"],
+            "count": 1,
+            "allowedCudaVersions": ["13.0"],
+        }
+        endpoint = template.temporary_endpoint_payload("template-public", selection)
+        self.assertEqual(endpoint["templateId"], "template-public")
+        self.assertEqual(endpoint["gpu"], selection)
+        self.assertEqual(endpoint["workers"], {"min": 0, "max": 1, "idleTimeout": 300})
+        self.assertEqual(endpoint["scaling"], {"type": "QUEUE_DELAY", "queueDelay": 1})
+        self.assertEqual(endpoint["flashboot"], "FLASHBOOT")
+        self.assertGreaterEqual(endpoint["executionTimeout"], 1_800_000)
+
+    def test_temporary_endpoint_rejects_unpinned_selection(self):
+        with self.assertRaisesRegex(SystemExit, "not admitted"):
+            template.exact_serverless_gpu_selection(
+                FakeSession(
+                    [
+                        {
+                            "id": template.GPU_TYPE_ID,
+                            "pool": None,
+                            "price": {},
+                            "availability": "HIGH",
+                            "cudaVersions": [{"version": "13.0", "available": True}],
+                        }
+                    ]
+                ),
+                "redacted",
+            )
+        with self.assertRaisesRegex(ValueError, "exact-B300 gate"):
+            template.temporary_endpoint_payload(
+                "template-public", {"pools": ["BLACKWELL"], "count": 1}
+            )
 
     def test_readback_verifies_all_persisted_fields(self):
         value = template.payload()

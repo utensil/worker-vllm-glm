@@ -99,7 +99,10 @@ native `messages` or `prompt` shorthand. Routes, methods, body size, model name,
 backend liveness, startup time, and request time are checked fail-closed. SSE
 chunks are forwarded for streaming jobs. Tool definitions and remote image-URL
 message content pass through without being rewritten; their model behavior is
-not claimed until the live acceptance gate.
+not claimed until the live acceptance gate. The handler is an async generator
+and uses `aiohttp`, so the configured two in-flight jobs do not block each
+other's event-loop progress. A post-health watchdog terminates the worker if
+the owned vLLM child exits after queue registration.
 
 The process ownership and queue-proxy pattern is grounded in official RunPod
 [`worker-vllm` commit `84a6b5e8`](https://github.com/runpod-workers/worker-vllm/commit/84a6b5e8fc9f7beb4def70b823706262e047b315).
@@ -109,10 +112,19 @@ fail-closed processor patch.
 
 The desired hardware remains exactly **1 x NVIDIA B300 SXM6 AC at TP1**. RunPod
 Serverless endpoint APIs select GPU pools, which can contain multiple GPU types.
-Before any live template or endpoint action, `create_serverless_template.py`
-reads the current Serverless GPU catalog and requires the exact B300 type to
-have a Serverless pool and price. It constructs exclusions for every other type
-in that pool. It never substitutes B200, changes to TP2, or creates an endpoint.
+The template itself does not select hardware, so template publication/readback
+is independent of current GPU stock. Before any endpoint action,
+`create_serverless_template.py --check-gpu` reads the current Serverless GPU
+catalog and requires the exact B300 type to have a Serverless pool, price,
+non-`NONE` availability, and an available CUDA 13.0 placement. It constructs
+exclusions for every other type in that pool and pins CUDA 13.0. It never
+substitutes B200, changes to TP2, or creates an endpoint.
+
+**Current endpoint blocker (2026-08-29 catalog readback):** exact
+`NVIDIA B300 SXM6 AC` has `pool=null`, no Serverless price, and availability
+`NONE`; CUDA 13.0 and 13.2 are listed but unavailable. The public template can
+still be published after its image digest is pinned, but exact-B300 live
+validation cannot start until the mandatory read-only gate passes.
 
 The public template candidate is volume-free with a 300 GB ephemeral container
 disk. This preserves maximum placement availability and matches the proved
@@ -137,7 +149,7 @@ fit. The first bounded validation must use a temporary endpoint with
 Local, no-spend checks:
 
 ```bash
-python3 -m pip install requests
+python3 -m pip install requests -r serverless/requirements.txt
 python3 -m unittest discover -v
 python3 create_serverless_template.py
 docker build --target serverless -t worker-vllm-glm:serverless-candidate .
@@ -145,9 +157,22 @@ docker build --target serverless -t worker-vllm-glm:serverless-candidate .
 
 `create_serverless_template.py --create` is deliberately locked until CI has
 published the separate Serverless image and the script's image constant is
-replaced with its immutable digest. Once pinned, `--create` performs the exact
-B300 catalog gate, creates or reuses the public Serverless template, and reads
-back every persisted field. It does not create an endpoint or start compute.
+replaced with its immutable digest. Once pinned, `--create` creates or reuses
+the public Serverless template and reads back every persisted field. It does
+not require GPU stock, create an endpoint, or start compute.
+
+Endpoint preflight is separate and mandatory:
+
+```bash
+export RUNPOD_API_KEY=...  # keep this out of shell history and source control
+python3 create_serverless_template.py --check-gpu
+python3 create_serverless_template.py \
+  --render-temporary-endpoint PUBLIC_TEMPLATE_ID
+```
+
+The second command is render-only. It carries the admitted pool, exclusions of
+all other current pool members, one GPU, and CUDA 13.0 directly into the bounded
+endpoint payload. Both commands currently fail closed at the exact-B300 gate.
 
 Live acceptance requires separate approval and evidence: anonymous digest pull;
 public template readback; a temporary endpoint with `workersMin=0`; one bounded

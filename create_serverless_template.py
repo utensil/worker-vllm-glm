@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Render, create, and read back the public GLM Serverless worker template.
 
-Dry render is the default. Live creation requires an immutable image digest,
-an API key from the environment, and an exact live catalog match for one B300.
-It never creates an endpoint or starts compute.
+Dry render is the default. Template creation requires an immutable image digest
+and an API key from the environment, but is deliberately independent of GPU
+availability because templates do not select hardware. The separate endpoint
+preflight requires an exact, currently admitted B300. Nothing here creates an
+endpoint or starts compute.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ GRAPHQL = "https://api.runpod.io/graphql"
 IMAGE = "ghcr.io/utensil/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-v1"
 NAME = "GLM-5.3-Flash-NVFP4 (Public Serverless 1xB300 TP1)"
 GPU_TYPE_ID = "NVIDIA B300 SXM6 AC"
+CUDA_VERSION = "13.0"
 
 README = """# GLM-5.3-Flash-NVFP4 Serverless worker
 
@@ -35,6 +38,11 @@ The template uses a 300 GB ephemeral disk, no network volume, no exposed port,
 and stores no credentials. Both RunPod and vLLM initialization timeouts are
 1800 seconds. This template does not select or create an endpoint; endpoint
 creation must independently pin the exact B300 type with no hardware fallback.
+
+At the 2026-08-29 catalog readback, exact-B300 endpoint validation is blocked:
+its Serverless pool and price are null, availability is NONE, and its listed
+CUDA 13.0/13.2 placements are unavailable. Re-run the repository's mandatory
+read-only GPU gate before endpoint work; never substitute B200 or change to TP2.
 
 Serverless remains unvalidated until the repository's bounded live gate passes.
 Source: https://github.com/utensil/worker-vllm-glm
@@ -96,7 +104,12 @@ def exact_serverless_gpu_selection(
     response = session.get(
         API_V2 + "/catalog/gpus",
         headers=_headers(key),
-        params={"include": "AVAILABILITY", "product": "SERVERLESS", "count": 1},
+        params={
+            "include": "AVAILABILITY",
+            "product": "SERVERLESS",
+            "count": 1,
+            "cudaVersions": CUDA_VERSION,
+        },
         timeout=30,
     )
     body = _response_json(response, "serverless GPU catalog read")
@@ -107,17 +120,59 @@ def exact_serverless_gpu_selection(
     if len(exact) != 1:
         raise SystemExit(f"exact Serverless GPU type unavailable: {GPU_TYPE_ID}")
     gpu = exact[0]
+    availability = gpu.get("availability")
+    if availability not in {"LOW", "MEDIUM", "HIGH"}:
+        raise SystemExit(
+            f"exact GPU has no current Serverless availability: {GPU_TYPE_ID} "
+            f"availability={availability}"
+        )
     pool = gpu.get("pool")
     serverless_price = (gpu.get("price") or {}).get("serverless")
     if not isinstance(pool, str) or not pool or serverless_price is None:
         raise SystemExit(f"exact GPU is not admitted to Serverless: {GPU_TYPE_ID}")
+    cuda_versions = gpu.get("cudaVersions") or []
+    cuda_match = [
+        item
+        for item in cuda_versions
+        if item.get("version") == CUDA_VERSION and item.get("available") is True
+    ]
+    if len(cuda_match) != 1:
+        raise SystemExit(
+            f"exact GPU lacks available CUDA {CUDA_VERSION}: {GPU_TYPE_ID}"
+        )
 
     exclusions = sorted(
         candidate["id"]
         for candidate in gpus
         if candidate.get("pool") == pool and candidate.get("id") != GPU_TYPE_ID
     )
-    return {"pools": [pool], "excludedTypes": exclusions, "count": 1}
+    return {
+        "pools": [pool],
+        "excludedTypes": exclusions,
+        "count": 1,
+        "allowedCudaVersions": [CUDA_VERSION],
+    }
+
+
+def temporary_endpoint_payload(
+    template_id: str, gpu_selection: dict[str, Any]
+) -> dict[str, Any]:
+    """Render the approved bounded endpoint configuration without creating it."""
+    if not template_id.strip():
+        raise ValueError("template_id must be non-empty")
+    expected_keys = {"pools", "excludedTypes", "count", "allowedCudaVersions"}
+    if set(gpu_selection) != expected_keys:
+        raise ValueError("gpu selection was not produced by the exact-B300 gate")
+    return {
+        "name": "GLM-5.3-Flash-NVFP4 temporary validation",
+        "templateId": template_id,
+        "type": "QUEUE",
+        "gpu": gpu_selection,
+        "workers": {"min": 0, "max": 1, "idleTimeout": 300},
+        "scaling": {"type": "QUEUE_DELAY", "queueDelay": 1},
+        "flashboot": "FLASHBOOT",
+        "executionTimeout": 1_800_000,
+    }
 
 
 def _stored_view(value: dict[str, Any]) -> dict[str, Any]:
@@ -214,15 +269,14 @@ def _templates(session: requests.Session, key: str) -> list[dict[str, Any]]:
 
 def create_or_reuse(
     expected: dict[str, Any], key: str, session: requests.Session
-) -> tuple[str, str, dict[str, Any]]:
+) -> tuple[str, str]:
     require_immutable_image(expected["imageName"])
-    gpu_selection = exact_serverless_gpu_selection(session, key)
     matches = [item for item in _templates(session, key) if item.get("name") == NAME]
     if len(matches) > 1:
         raise SystemExit("multiple templates have the requested name")
     if matches:
         verify(matches[0], expected)
-        return matches[0]["id"], "reused", gpu_selection
+        return matches[0]["id"], "reused"
 
     created = _response_json(
         session.post(
@@ -242,34 +296,47 @@ def create_or_reuse(
     if len(matches) != 1:
         raise SystemExit("created template missing from GraphQL readback")
     verify(matches[0], expected)
-    return template_id, "created", gpu_selection
+    return template_id, "created"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--create", action="store_true", help="create/reuse and verify")
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--create", action="store_true", help="create/reuse and verify")
+    action.add_argument(
         "--check-gpu", action="store_true", help="read-only exact B300 Serverless check"
+    )
+    action.add_argument(
+        "--render-temporary-endpoint",
+        metavar="TEMPLATE_ID",
+        help="read live GPU catalog and render, but do not create, a bounded endpoint",
     )
     args = parser.parse_args()
     expected = payload()
-    if not (args.create or args.check_gpu):
+    if not (args.create or args.check_gpu or args.render_temporary_endpoint):
         print(json.dumps(expected, indent=2))
         print("PUBLIC_SERVERLESS_TEMPLATE(dry): PASS")
+        print(
+            "ENDPOINT_LIVE(2026-08-29): BLOCKED exact B300 is not currently "
+            "admitted/available on Serverless"
+        )
         return 0
     key = os.environ.get("RUNPOD_API_KEY", "").strip()
     if not key:
         raise SystemExit("set RUNPOD_API_KEY")
     session = requests.Session()
-    if args.check_gpu and not args.create:
+    if args.check_gpu:
         selection = exact_serverless_gpu_selection(session, key)
         print("EXACT_SERVERLESS_GPU: PASS " + json.dumps(selection, sort_keys=True))
         return 0
-    template_id, action, selection = create_or_reuse(expected, key, session)
-    print(
-        f"PUBLIC_SERVERLESS_TEMPLATE: PASS action={action} id={template_id} "
-        f"gpu={json.dumps(selection, sort_keys=True)}"
-    )
+    if args.render_temporary_endpoint:
+        selection = exact_serverless_gpu_selection(session, key)
+        endpoint = temporary_endpoint_payload(args.render_temporary_endpoint, selection)
+        print(json.dumps(endpoint, indent=2, sort_keys=True))
+        print("TEMPORARY_ENDPOINT(render-only): PASS")
+        return 0
+    template_id, result = create_or_reuse(expected, key, session)
+    print(f"PUBLIC_SERVERLESS_TEMPLATE: PASS action={result} id={template_id}")
     return 0
 
 

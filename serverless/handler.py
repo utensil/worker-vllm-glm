@@ -1,22 +1,22 @@
-"""Strict RunPod queue adapter for the local GLM vLLM OpenAI server.
+"""Async RunPod queue adapter for the local GLM vLLM OpenAI server.
 
-The worker supports only non-streaming chat completions, text completions, and
-model listing. The OpenAI-compatible RunPod route uses ``openai_route`` and
+The worker supports model listing plus non-streaming and SSE chat/text
+completions. RunPod's OpenAI-compatible route uses ``openai_route`` and
 ``openai_input``. Native queue clients may instead send ``messages`` or
 ``prompt`` with an optional ``sampling_params`` object.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import time
-import urllib.error
-import urllib.request
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+
+import aiohttp
 
 LOGGER = logging.getLogger(__name__)
 MODEL = "RedHatAI/GLM-5.3-Flash-NVFP4"
@@ -134,88 +134,67 @@ def _backend_alive() -> bool:
     return backend_process is not None and backend_process.poll() is None
 
 
-def _call_backend(spec: RequestSpec) -> dict[str, Any]:
-    data = None
-    headers: dict[str, str] = {}
-    if spec.body is not None:
-        data = json.dumps(spec.body, separators=(",", ":")).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(
-        DEFAULT_BASE_URL + spec.route,
-        data=data,
-        headers=headers,
-        method=spec.method,
-    )
+async def _proxy(spec: RequestSpec) -> AsyncIterator[Any]:
+    timeout = aiohttp.ClientTimeout(total=_timeout_seconds())
+    headers = {"Content-Type": "application/json"}
+    if spec.stream:
+        headers["Accept"] = "text/event-stream"
     try:
-        with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
-            payload = response.read(MAX_BODY_BYTES + 1)
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.request(
+                spec.method,
+                DEFAULT_BASE_URL + spec.route,
+                json=spec.body,
+                headers=headers,
+            ) as response,
+        ):
+            if response.status >= 400:
+                LOGGER.warning(
+                    "vLLM returned HTTP %s for %s", response.status, spec.route
+                )
+                yield _error(
+                    f"vLLM returned HTTP {response.status}",
+                    "backend_error",
+                    response.status,
+                )
+                return
+            if spec.stream:
+                async for chunk in response.content.iter_any():
+                    yield chunk.decode("utf-8", errors="replace")
+                return
+            payload = await response.content.read(MAX_BODY_BYTES + 1)
             if len(payload) > MAX_BODY_BYTES:
-                return _error("vLLM response exceeds 2 MiB", "backend_error")
+                yield _error("vLLM response exceeds 2 MiB", "backend_error")
+                return
             parsed = json.loads(payload)
             if not isinstance(parsed, dict):
-                return _error(
+                yield _error(
                     "vLLM returned a non-object JSON response", "backend_error"
                 )
-            return parsed
-    except urllib.error.HTTPError as exc:
-        LOGGER.warning("vLLM returned HTTP %s for %s", exc.code, spec.route)
-        return _error(f"vLLM returned HTTP {exc.code}", "backend_error", exc.code)
-    except OSError as exc:
+                return
+            yield parsed
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         LOGGER.warning("vLLM request failed for %s: %s", spec.route, type(exc).__name__)
-        return _error("vLLM backend request failed or timed out", "backend_error")
+        yield _error("vLLM backend request failed or timed out", "backend_error")
     except (UnicodeDecodeError, json.JSONDecodeError):
         LOGGER.warning("vLLM returned invalid JSON for %s", spec.route)
-        return _error("vLLM returned invalid JSON", "backend_error")
+        yield _error("vLLM returned invalid JSON", "backend_error")
 
 
-def _stream_backend(spec: RequestSpec) -> Iterator[str | dict[str, Any]]:
-    assert spec.body is not None
-    data = json.dumps(spec.body, separators=(",", ":")).encode("utf-8")
-    request = urllib.request.Request(
-        DEFAULT_BASE_URL + spec.route,
-        data=data,
-        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-        method="POST",
-    )
-    timeout = _timeout_seconds()
-    deadline = time.monotonic() + timeout
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            while True:
-                if time.monotonic() >= deadline:
-                    yield _error("vLLM backend request timed out", "backend_error")
-                    return
-                chunk = response.readline(64 * 1024)
-                if not chunk:
-                    return
-                yield chunk.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        LOGGER.warning("vLLM returned HTTP %s for %s", exc.code, spec.route)
-        yield _error(f"vLLM returned HTTP {exc.code}", "backend_error", exc.code)
-    except OSError:
-        LOGGER.warning("vLLM streaming request failed for %s", spec.route)
-        yield _error("vLLM backend request failed or timed out", "backend_error")
-
-
-def handler(job: Any) -> Iterator[Any]:
+async def handler(job: Any) -> AsyncIterator[Any]:
     try:
         spec = normalize_job(job)
     except RequestValidationError as exc:
         yield _error(str(exc), "validation_error")
-        return
-    except RuntimeError as exc:
-        LOGGER.error("Invalid worker configuration: %s", exc)
-        yield _error("worker request timeout configuration is invalid", "worker_error")
         return
 
     if not _backend_alive():
         yield _error("vLLM backend is not running", "worker_unhealthy")
         return
     try:
-        if spec.stream:
-            yield from _stream_backend(spec)
-        else:
-            yield _call_backend(spec)
+        async for output in _proxy(spec):
+            yield output
     except RuntimeError as exc:
         LOGGER.error("Invalid worker configuration: %s", exc)
         yield _error("worker request timeout configuration is invalid", "worker_error")

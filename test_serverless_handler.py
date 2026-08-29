@@ -1,7 +1,8 @@
+import asyncio
+import inspect
 import json
 import os
 import unittest
-import urllib.error
 from unittest import mock
 
 from serverless import handler
@@ -15,25 +16,51 @@ class FakeProcess:
         return self.return_code
 
 
-class FakeResponse:
-    def __init__(self, value, status=200):
-        self.value = value
-        self.status = status
+class FakeContent:
+    def __init__(self, payload=b"", chunks=None):
+        self.payload = payload
+        self.chunks = chunks or []
 
-    def __enter__(self):
+    async def read(self, limit=-1):
+        return self.payload if limit < 0 else self.payload[:limit]
+
+    async def iter_any(self):
+        for chunk in self.chunks:
+            await asyncio.sleep(0)
+            yield chunk
+
+
+class FakeResponse:
+    def __init__(self, value=None, *, status=200, chunks=None):
+        payload = b"" if value is None else json.dumps(value).encode("utf-8")
+        self.status = status
+        self.content = FakeContent(payload, chunks)
+
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *_args):
+    async def __aexit__(self, *_args):
         return False
 
-    def read(self, _limit=-1):
-        return json.dumps(self.value).encode("utf-8")
 
-    def readline(self, _limit=-1):
-        if getattr(self, "_read", False):
-            return b""
-        self._read = True
-        return self.value if isinstance(self.value, bytes) else self.read()
+class FakeSession:
+    def __init__(self, response):
+        self.response = response
+        self.request_call = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    def request(self, *args, **kwargs):
+        self.request_call = (args, kwargs)
+        return self.response
+
+
+async def collect(job):
+    return [item async for item in handler.handler(job)]
 
 
 class ServerlessHandlerTest(unittest.TestCase):
@@ -42,6 +69,21 @@ class ServerlessHandlerTest(unittest.TestCase):
 
     def tearDown(self):
         handler.backend_process = None
+
+    def test_handler_is_async_generator(self):
+        self.assertTrue(inspect.isasyncgenfunction(handler.handler))
+
+    def test_pinned_runpod_sdk_consumes_async_generator(self):
+        from runpod.serverless.modules.rp_job import run_job_generator
+
+        async def collect_with_sdk():
+            job = {"id": "unit-job", "input": {"openai_route": "/v1/models"}}
+            return [item async for item in run_job_generator(handler.handler, job)]
+
+        session = FakeSession(FakeResponse({"id": "ok"}))
+        with mock.patch.object(handler.aiohttp, "ClientSession", return_value=session):
+            result = asyncio.run(collect_with_sdk())
+        self.assertEqual(result, [{"output": {"id": "ok"}}])
 
     def test_openai_chat_injects_pinned_model_and_calls_loopback(self):
         job = {
@@ -53,15 +95,13 @@ class ServerlessHandlerTest(unittest.TestCase):
                 },
             }
         }
-        with mock.patch.object(
-            handler.urllib.request, "urlopen", return_value=FakeResponse({"id": "ok"})
-        ) as opened:
-            self.assertEqual(list(handler.handler(job)), [{"id": "ok"}])
-        request = opened.call_args.args[0]
-        self.assertEqual(request.full_url, "http://127.0.0.1:8000/v1/chat/completions")
-        body = json.loads(request.data)
-        self.assertEqual(body["model"], handler.MODEL)
-        self.assertNotIn("Authorization", dict(request.header_items()))
+        session = FakeSession(FakeResponse({"id": "ok"}))
+        with mock.patch.object(handler.aiohttp, "ClientSession", return_value=session):
+            self.assertEqual(asyncio.run(collect(job)), [{"id": "ok"}])
+        args, kwargs = session.request_call
+        self.assertEqual(args, ("POST", "http://127.0.0.1:8000/v1/chat/completions"))
+        self.assertEqual(kwargs["json"]["model"], handler.MODEL)
+        self.assertNotIn("Authorization", kwargs["headers"])
 
     def test_models_is_get_without_body(self):
         spec = handler.normalize_job({"input": {"openai_route": "/v1/models"}})
@@ -82,12 +122,14 @@ class ServerlessHandlerTest(unittest.TestCase):
         self.assertEqual(spec.body["temperature"], 0.2)
 
     def test_sse_streaming_forwards_raw_chunks(self):
-        response = FakeResponse(b'data: {"choices":[]}\n\n')
+        response = FakeResponse(
+            chunks=[b'data: {"choices":[]}\n\n', b"data: [DONE]\n\n"]
+        )
         with mock.patch.object(
-            handler.urllib.request, "urlopen", return_value=response
+            handler.aiohttp, "ClientSession", return_value=FakeSession(response)
         ):
-            chunks = list(
-                handler.handler(
+            chunks = asyncio.run(
+                collect(
                     {
                         "input": {
                             "messages": [{"role": "user", "content": "hi"}],
@@ -96,10 +138,38 @@ class ServerlessHandlerTest(unittest.TestCase):
                     }
                 )
             )
-        self.assertEqual(chunks, ['data: {"choices":[]}\n\n'])
+        self.assertEqual(chunks, ['data: {"choices":[]}\n\n', "data: [DONE]\n\n"])
+
+    def test_two_jobs_overlap_without_blocking_event_loop(self):
+        tracker = {"active": 0, "max_active": 0}
+
+        class OverlapResponse(FakeResponse):
+            async def __aenter__(self):
+                tracker["active"] += 1
+                tracker["max_active"] = max(tracker["max_active"], tracker["active"])
+                await asyncio.sleep(0.02)
+                return self
+
+            async def __aexit__(self, *_args):
+                tracker["active"] -= 1
+                return False
+
+        def session_factory(**_kwargs):
+            return FakeSession(OverlapResponse({"id": "ok"}))
+
+        async def run_both():
+            job = {"input": {"openai_route": "/v1/models"}}
+            return await asyncio.gather(collect(job), collect(job))
+
+        with mock.patch.object(
+            handler.aiohttp, "ClientSession", side_effect=session_factory
+        ):
+            results = asyncio.run(run_both())
+        self.assertEqual(results, [[{"id": "ok"}], [{"id": "ok"}]])
+        self.assertEqual(tracker["max_active"], 2)
 
     def test_arbitrary_routes_fail_closed(self):
-        route = list(handler.handler({"input": {"route": "/metrics"}}))
+        route = asyncio.run(collect({"input": {"route": "/metrics"}}))
         self.assertEqual(route[0]["error"]["type"], "validation_error")
 
     def test_tool_and_remote_image_url_payloads_pass_through(self):
@@ -125,8 +195,8 @@ class ServerlessHandlerTest(unittest.TestCase):
         self.assertEqual(spec.body["messages"], body["messages"])
 
     def test_wrong_model_and_bad_method_fail_closed(self):
-        wrong_model = list(
-            handler.handler(
+        wrong_model = asyncio.run(
+            collect(
                 {
                     "input": {
                         "openai_input": {
@@ -137,26 +207,24 @@ class ServerlessHandlerTest(unittest.TestCase):
                 }
             )
         )
-        bad_method = list(
-            handler.handler({"input": {"route": "/v1/models", "method": "POST"}})
+        bad_method = asyncio.run(
+            collect({"input": {"route": "/v1/models", "method": "POST"}})
         )
         self.assertEqual(wrong_model[0]["error"]["type"], "validation_error")
         self.assertEqual(bad_method[0]["error"]["type"], "validation_error")
 
     def test_dead_backend_fails_before_http(self):
         handler.backend_process = FakeProcess(1)
-        with mock.patch.object(handler.urllib.request, "urlopen") as opened:
-            result = list(handler.handler({"input": {"openai_route": "/v1/models"}}))
+        with mock.patch.object(handler.aiohttp, "ClientSession") as session:
+            result = asyncio.run(collect({"input": {"openai_route": "/v1/models"}}))
         self.assertEqual(result[0]["error"]["type"], "worker_unhealthy")
-        opened.assert_not_called()
+        session.assert_not_called()
 
     def test_backend_http_error_is_bounded_and_does_not_echo_body(self):
-        error = urllib.error.HTTPError(
-            "http://127.0.0.1:8000/v1/chat/completions", 400, "bad", {}, None
-        )
-        with mock.patch.object(handler.urllib.request, "urlopen", side_effect=error):
-            result = list(
-                handler.handler(
+        session = FakeSession(FakeResponse(status=400))
+        with mock.patch.object(handler.aiohttp, "ClientSession", return_value=session):
+            result = asyncio.run(
+                collect(
                     {
                         "input": {
                             "messages": [{"role": "user", "content": "private prompt"}]
@@ -169,7 +237,7 @@ class ServerlessHandlerTest(unittest.TestCase):
 
     def test_invalid_timeout_configuration_returns_worker_error(self):
         with mock.patch.dict(os.environ, {"BACKEND_REQUEST_TIMEOUT_SECONDS": "bad"}):
-            result = list(handler.handler({"input": {"openai_route": "/v1/models"}}))
+            result = asyncio.run(collect({"input": {"openai_route": "/v1/models"}}))
         self.assertEqual(result[0]["error"]["type"], "worker_error")
 
 

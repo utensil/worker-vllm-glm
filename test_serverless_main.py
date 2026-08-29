@@ -1,4 +1,5 @@
 import subprocess
+import threading
 import unittest
 from unittest import mock
 
@@ -76,6 +77,23 @@ class ServerlessMainTest(unittest.TestCase):
         main.stop_backend(process)
         self.assertTrue(process.terminated)
         self.assertTrue(process.killed)
+
+    def test_watchdog_terminates_worker_when_healthy_child_later_exits(self):
+        process = FakeProcess(17)
+        stop_event = threading.Event()
+        with (
+            mock.patch.object(main.os, "getpid", return_value=1234),
+            mock.patch.object(main.os, "kill") as kill,
+        ):
+            main.watch_backend(process, stop_event, poll_seconds=0)
+        kill.assert_called_once_with(1234, main.signal.SIGTERM)
+
+    def test_watchdog_does_not_signal_during_intentional_shutdown(self):
+        stop_event = threading.Event()
+        stop_event.set()
+        with mock.patch.object(main.os, "kill") as kill:
+            main.watch_backend(FakeProcess(0), stop_event, poll_seconds=0)
+        kill.assert_not_called()
 
 
 if __name__ == "__main__":

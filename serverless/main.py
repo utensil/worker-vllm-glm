@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +25,7 @@ PORT = 8000
 HEALTH_POLL_SECONDS = 2.0
 
 backend_process: subprocess.Popen[Any] | None = None
+watchdog_stop_event = threading.Event()
 
 
 def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -125,8 +127,43 @@ def stop_backend(process: subprocess.Popen[Any], grace_seconds: float = 15) -> N
         process.wait(timeout=grace_seconds)
 
 
+def watch_backend(
+    process: subprocess.Popen[Any],
+    stop_event: threading.Event,
+    *,
+    poll_seconds: float = 2.0,
+) -> None:
+    """Terminate this worker if the healthy vLLM child later exits."""
+    while not stop_event.wait(poll_seconds):
+        return_code = process.poll()
+        if return_code is None:
+            continue
+        if stop_event.is_set():
+            return
+        LOGGER.critical(
+            "vLLM exited after queue registration with code %s; terminating worker",
+            return_code,
+        )
+        os.kill(os.getpid(), signal.SIGTERM)
+        return
+
+
+def start_backend_watchdog(
+    process: subprocess.Popen[Any], stop_event: threading.Event
+) -> threading.Thread:
+    thread = threading.Thread(
+        target=watch_backend,
+        args=(process, stop_event),
+        name="vllm-child-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _forward_signal(signum: int, _frame: Any) -> None:
     LOGGER.info("received signal %s", signum)
+    watchdog_stop_event.set()
     if backend_process is not None:
         stop_backend(backend_process)
     raise SystemExit(128 + signum)
@@ -151,6 +188,8 @@ def main() -> None:
 
     queue_handler.backend_process = backend_process
     max_concurrency = _bounded_int("MAX_CONCURRENCY", 2, 1, 2)
+    watchdog_stop_event.clear()
+    start_backend_watchdog(backend_process, watchdog_stop_event)
     try:
         runpod.serverless.start(
             {
@@ -160,6 +199,7 @@ def main() -> None:
             }
         )
     finally:
+        watchdog_stop_event.set()
         stop_backend(backend_process)
 
 

@@ -27,9 +27,15 @@ class ServerlessArtifactTest(unittest.TestCase):
         self.assertIn("target: serverless", workflow)
         self.assertIn("glm-5.3-flash-nvfp4-serverless-v1", workflow)
 
-    def test_runpod_sdk_is_pinned(self):
-        requirements = (ROOT / "serverless" / "requirements.txt").read_text().strip()
-        self.assertEqual(requirements, "runpod==1.12.0")
+    def test_worker_dependencies_pin_sdk_and_bound_async_client(self):
+        requirements = set(
+            (ROOT / "serverless" / "requirements.txt").read_text().splitlines()
+        )
+        self.assertEqual(requirements, {"runpod==1.12.0", "aiohttp>=3.9,<4"})
+
+    def test_ci_installs_worker_dependencies_before_tests(self):
+        workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text()
+        self.assertIn("-r serverless/requirements.txt", workflow)
 
 
 if __name__ == "__main__":
