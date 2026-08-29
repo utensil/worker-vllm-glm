@@ -18,9 +18,13 @@ class ServerlessB200CachedTemplateTest(unittest.TestCase):
         self.assertNotIn("HF_TOKEN", value["env"])
         self.assertNotIn("RUNPOD_API_KEY", value["env"])
 
-    def test_creation_stays_locked_until_digest_is_pinned(self):
-        with self.assertRaisesRegex(SystemExit, "published digest"):
-            template.b200.common.require_immutable_image(template.IMAGE)
+    def test_creation_uses_published_amd64_digest(self):
+        template.b200.common.require_immutable_image(template.IMAGE)
+        self.assertEqual(
+            template.IMAGE,
+            "ghcr.io/utensil/worker-vllm-glm@"
+            "sha256:577394a87422627b322d7c64bb3d589fd5a9b2f1d25bda87e7048a1855364669",
+        )
 
 
 if __name__ == "__main__":

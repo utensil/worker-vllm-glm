@@ -14,8 +14,8 @@ import requests
 import create_serverless_b200_template as b200
 
 IMAGE = (
-    "ghcr.io/utensil/worker-vllm-glm:"
-    "glm-5.3-flash-nvfp4-serverless-b200-tp2-cached-candidate"
+    "ghcr.io/utensil/worker-vllm-glm@"
+    "sha256:577394a87422627b322d7c64bb3d589fd5a9b2f1d25bda87e7048a1855364669"
 )
 NAME = "GLM-5.3-Flash-NVFP4 (Public Serverless Cached 2xB200 TP2)"
 
