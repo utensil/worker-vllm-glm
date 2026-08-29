@@ -26,6 +26,14 @@ IMAGE = "ghcr.io/utensil/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-v1"
 NAME = "GLM-5.3-Flash-NVFP4 (Public Serverless 1xB300 TP1)"
 GPU_TYPE_ID = "NVIDIA B300 SXM6 AC"
 CUDA_VERSION = "13.0"
+ENDPOINT_ALLOWED_KEYS = frozenset(
+    {"name", "templateId", "type", "gpu", "workers", "scaling", "flashboot", "timeout"}
+)
+ENDPOINT_GPU_KEYS = frozenset(
+    {"pools", "excludedTypes", "count", "allowedCudaVersions"}
+)
+ENDPOINT_WORKER_KEYS = frozenset({"min", "max", "idleTimeout"})
+ENDPOINT_SCALING_KEYS = frozenset({"type", "queueDelay"})
 
 README = """# GLM-5.3-Flash-NVFP4 Serverless worker
 
@@ -160,10 +168,9 @@ def temporary_endpoint_payload(
     """Render the approved bounded endpoint configuration without creating it."""
     if not template_id.strip():
         raise ValueError("template_id must be non-empty")
-    expected_keys = {"pools", "excludedTypes", "count", "allowedCudaVersions"}
-    if set(gpu_selection) != expected_keys:
+    if set(gpu_selection) != ENDPOINT_GPU_KEYS:
         raise ValueError("gpu selection was not produced by the exact-B300 gate")
-    return {
+    endpoint = {
         "name": "GLM-5.3-Flash-NVFP4 temporary validation",
         "templateId": template_id,
         "type": "QUEUE",
@@ -171,8 +178,57 @@ def temporary_endpoint_payload(
         "workers": {"min": 0, "max": 1, "idleTimeout": 300},
         "scaling": {"type": "QUEUE_DELAY", "queueDelay": 1},
         "flashboot": "FLASHBOOT",
-        "executionTimeout": 1_800_000,
+        "timeout": 1_800_000,
     }
+    validate_temporary_endpoint_payload(endpoint)
+    return endpoint
+
+
+def validate_temporary_endpoint_payload(endpoint: dict[str, Any]) -> None:
+    """Fail closed if the REST v2 CreateEndpointRequest contract drifts."""
+    if set(endpoint) != ENDPOINT_ALLOWED_KEYS:
+        raise ValueError("temporary endpoint has unsupported or missing top-level keys")
+    if (
+        not isinstance(endpoint["name"], str)
+        or not endpoint["name"].strip()
+        or not isinstance(endpoint["templateId"], str)
+        or not endpoint["templateId"].strip()
+        or endpoint["type"] != "QUEUE"
+        or endpoint["flashboot"] != "FLASHBOOT"
+        or type(endpoint["timeout"]) is not int
+        or endpoint["timeout"] != 1_800_000
+    ):
+        raise ValueError("temporary endpoint scalar contract mismatch")
+    gpu = endpoint["gpu"]
+    if not isinstance(gpu, dict) or set(gpu) != ENDPOINT_GPU_KEYS:
+        raise ValueError("temporary endpoint GPU contract mismatch")
+    if (
+        not isinstance(gpu["pools"], list)
+        or len(gpu["pools"]) != 1
+        or not isinstance(gpu["pools"][0], str)
+        or not gpu["pools"][0]
+        or not isinstance(gpu["excludedTypes"], list)
+        or any(not isinstance(item, str) or not item for item in gpu["excludedTypes"])
+        or gpu["excludedTypes"] != sorted(set(gpu["excludedTypes"]))
+        or type(gpu["count"]) is not int
+        or gpu["count"] != 1
+        or gpu["allowedCudaVersions"] != [CUDA_VERSION]
+    ):
+        raise ValueError("temporary endpoint exact-B300 selection mismatch")
+    workers = endpoint["workers"]
+    if (
+        not isinstance(workers, dict)
+        or set(workers) != ENDPOINT_WORKER_KEYS
+        or workers != {"min": 0, "max": 1, "idleTimeout": 300}
+    ):
+        raise ValueError("temporary endpoint worker bounds mismatch")
+    scaling = endpoint["scaling"]
+    if (
+        not isinstance(scaling, dict)
+        or set(scaling) != ENDPOINT_SCALING_KEYS
+        or scaling != {"type": "QUEUE_DELAY", "queueDelay": 1}
+    ):
+        raise ValueError("temporary endpoint scaling contract mismatch")
 
 
 def _stored_view(value: dict[str, Any]) -> dict[str, Any]:

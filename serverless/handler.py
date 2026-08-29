@@ -27,6 +27,7 @@ SUPPORTED_ROUTES = {
     "/v1/models": "GET",
 }
 MAX_BODY_BYTES = 2 * 1024 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 
 # Assigned by main.py only after the backend passes its health gate.
 backend_process: Any | None = None
@@ -163,10 +164,15 @@ async def _proxy(spec: RequestSpec) -> AsyncIterator[Any]:
                 async for chunk in response.content.iter_any():
                     yield chunk.decode("utf-8", errors="replace")
                 return
-            payload = await response.content.read(MAX_BODY_BYTES + 1)
-            if len(payload) > MAX_BODY_BYTES:
-                yield _error("vLLM response exceeds 2 MiB", "backend_error")
-                return
+            chunks: list[bytes] = []
+            payload_size = 0
+            async for chunk in response.content.iter_chunked(READ_CHUNK_BYTES):
+                payload_size += len(chunk)
+                if payload_size > MAX_BODY_BYTES:
+                    yield _error("vLLM response exceeds 2 MiB", "backend_error")
+                    return
+                chunks.append(chunk)
+            payload = b"".join(chunks)
             parsed = json.loads(payload)
             if not isinstance(parsed, dict):
                 yield _error(

@@ -17,9 +17,10 @@ class FakeProcess:
 
 
 class FakeContent:
-    def __init__(self, payload=b"", chunks=None):
+    def __init__(self, payload=b"", chunks=None, read_chunks=None):
         self.payload = payload
         self.chunks = chunks or []
+        self.read_chunks = read_chunks
 
     async def read(self, limit=-1):
         return self.payload if limit < 0 else self.payload[:limit]
@@ -29,12 +30,23 @@ class FakeContent:
             await asyncio.sleep(0)
             yield chunk
 
+    async def iter_chunked(self, size):
+        chunks = self.read_chunks
+        if chunks is None:
+            chunks = [
+                self.payload[index : index + size]
+                for index in range(0, len(self.payload), size)
+            ]
+        for chunk in chunks:
+            await asyncio.sleep(0)
+            yield chunk
+
 
 class FakeResponse:
-    def __init__(self, value=None, *, status=200, chunks=None):
+    def __init__(self, value=None, *, status=200, chunks=None, read_chunks=None):
         payload = b"" if value is None else json.dumps(value).encode("utf-8")
         self.status = status
-        self.content = FakeContent(payload, chunks)
+        self.content = FakeContent(payload, chunks, read_chunks)
 
     async def __aenter__(self):
         return self
@@ -139,6 +151,24 @@ class ServerlessHandlerTest(unittest.TestCase):
                 )
             )
         self.assertEqual(chunks, ['data: {"choices":[]}\n\n', "data: [DONE]\n\n"])
+
+    def test_nonstream_json_accumulates_multiple_transport_chunks_to_eof(self):
+        response = FakeResponse(read_chunks=[b'{"id":', b'"split",', b'"value":4}'])
+        with mock.patch.object(
+            handler.aiohttp, "ClientSession", return_value=FakeSession(response)
+        ):
+            result = asyncio.run(collect({"input": {"openai_route": "/v1/models"}}))
+        self.assertEqual(result, [{"id": "split", "value": 4}])
+
+    def test_nonstream_json_fails_as_soon_as_accumulated_body_exceeds_limit(self):
+        response = FakeResponse(
+            read_chunks=[b"x" * handler.MAX_BODY_BYTES, b"overflow"]
+        )
+        with mock.patch.object(
+            handler.aiohttp, "ClientSession", return_value=FakeSession(response)
+        ):
+            result = asyncio.run(collect({"input": {"openai_route": "/v1/models"}}))
+        self.assertEqual(result[0]["error"]["message"], "vLLM response exceeds 2 MiB")
 
     def test_two_jobs_overlap_without_blocking_event_loop(self):
         tracker = {"active": 0, "max_active": 0}

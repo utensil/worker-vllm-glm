@@ -128,7 +128,36 @@ class ServerlessTemplateTest(unittest.TestCase):
         self.assertEqual(endpoint["workers"], {"min": 0, "max": 1, "idleTimeout": 300})
         self.assertEqual(endpoint["scaling"], {"type": "QUEUE_DELAY", "queueDelay": 1})
         self.assertEqual(endpoint["flashboot"], "FLASHBOOT")
-        self.assertGreaterEqual(endpoint["executionTimeout"], 1_800_000)
+        self.assertEqual(endpoint["timeout"], 1_800_000)
+        self.assertEqual(set(endpoint), template.ENDPOINT_ALLOWED_KEYS)
+        self.assertEqual(set(endpoint["gpu"]), template.ENDPOINT_GPU_KEYS)
+        self.assertEqual(set(endpoint["workers"]), template.ENDPOINT_WORKER_KEYS)
+        self.assertEqual(set(endpoint["scaling"]), template.ENDPOINT_SCALING_KEYS)
+        template.validate_temporary_endpoint_payload(endpoint)
+
+    def test_temporary_endpoint_rejects_unknown_rest_v2_key(self):
+        selection = {
+            "pools": ["BLACKWELL"],
+            "excludedTypes": ["NVIDIA B200"],
+            "count": 1,
+            "allowedCudaVersions": ["13.0"],
+        }
+        endpoint = template.temporary_endpoint_payload("template-public", selection)
+        endpoint["executionTimeout"] = endpoint.pop("timeout")
+        with self.assertRaisesRegex(ValueError, "top-level keys"):
+            template.validate_temporary_endpoint_payload(endpoint)
+
+    def test_temporary_endpoint_rejects_unknown_nested_key(self):
+        selection = {
+            "pools": ["BLACKWELL"],
+            "excludedTypes": ["NVIDIA B200"],
+            "count": 1,
+            "allowedCudaVersions": ["13.0"],
+        }
+        endpoint = template.temporary_endpoint_payload("template-public", selection)
+        endpoint["workers"]["unsupported"] = True
+        with self.assertRaisesRegex(ValueError, "worker bounds"):
+            template.validate_temporary_endpoint_payload(endpoint)
 
     def test_temporary_endpoint_rejects_unpinned_selection(self):
         with self.assertRaisesRegex(SystemExit, "not admitted"):

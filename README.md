@@ -144,7 +144,8 @@ The backend request timeout is 600 seconds. Endpoint policy is separate from a
 template: use job TTL of at least 3,600 seconds so provisioning and model load
 fit. The first bounded validation must use a temporary endpoint with
 `workersMin=0`, `workersMax=1`, queue-delay scaling at 1 second, FlashBoot,
-300-second idle timeout, and execution timeout of at least 1,800,000 ms.
+300-second idle timeout, and REST v2 `timeout` of 1,800,000 ms. The renderer
+validates the exact allowed top-level and nested key sets before printing it.
 
 Local, no-spend checks:
 
