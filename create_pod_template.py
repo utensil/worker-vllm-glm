@@ -16,7 +16,7 @@ IMAGE = (
 )
 MODEL = "RedHatAI/GLM-5.3-Flash-NVFP4"
 REVISION = "36c184c6cda000a481711306df5adde42f63321a"
-NAME = "GLM-5.3-Flash-NVFP4 (vLLM 1xB300 TP1)"
+NAME = "GLM-5.3-Flash-NVFP4 (Public vLLM 1xB300 TP1)"
 
 SERVE = (
     'api_args=(); if [ -n "${VLLM_API_KEY:-}" ]; then '

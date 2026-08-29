@@ -1,5 +1,7 @@
 # worker-vllm-glm
 
+[![Deploy GLM-5.3-Flash NVFP4 on RunPod](https://img.shields.io/badge/Deploy-GLM--5.3--Flash%20NVFP4-673AB7?style=for-the-badge)](https://console.runpod.io/deploy?template=yp08gkkdz2&ref=km0th85l)
+
 Public, secret-free vLLM worker images and RunPod templates for GLM models.
 
 The current release serves
@@ -11,7 +13,7 @@ as an OpenAI-compatible API on one NVIDIA B300.
 The public RunPod template is named:
 
 ```text
-GLM-5.3-Flash-NVFP4 (vLLM 1xB300 TP1)
+GLM-5.3-Flash-NVFP4 (Public vLLM 1xB300 TP1)
 ```
 
 Select exactly **1 x NVIDIA B300 SXM6 AC**, expose port 8000, and allow roughly
