@@ -48,12 +48,13 @@ class ServerlessTemplateTest(unittest.TestCase):
         self.assertNotIn("HF_TOKEN", value["env"])
         self.assertNotIn("VLLM_API_KEY", value["env"])
 
-    def test_live_create_is_locked_until_image_digest_is_pinned(self):
+    def test_live_create_requires_and_uses_an_image_digest(self):
         with self.assertRaisesRegex(SystemExit, "published digest"):
-            template.require_immutable_image(template.IMAGE)
-        template.require_immutable_image(
-            "ghcr.io/utensil/worker-vllm-glm@sha256:" + "a" * 64
-        )
+            template.require_immutable_image(
+                "ghcr.io/utensil/worker-vllm-glm:serverless-candidate"
+            )
+        template.require_immutable_image(template.IMAGE)
+        self.assertEqual(template.payload()["imageName"], template.IMAGE)
 
     def test_template_reuse_is_independent_of_gpu_catalog(self):
         expected = template.payload()
