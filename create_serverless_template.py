@@ -69,7 +69,8 @@ def payload() -> dict[str, Any]:
         "dockerStartCmd": [],
         "containerDiskInGb": 300,
         "volumeInGb": 0,
-        "volumeMountPath": "/runpod-volume",
+        # RunPod persists `/workspace` for a zero-volume Serverless template.
+        "volumeMountPath": "/workspace",
         "ports": [],
         "env": {
             "RUNPOD_INIT_TIMEOUT": "1800",

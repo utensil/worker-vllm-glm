@@ -1,6 +1,7 @@
 # worker-vllm-glm
 
 [![Deploy GLM-5.3-Flash NVFP4 on RunPod](https://img.shields.io/badge/Deploy-GLM--5.3--Flash%20NVFP4-673AB7?style=for-the-badge)](https://console.runpod.io/deploy?template=yp08gkkdz2&ref=km0th85l)
+[![Deploy GLM-5.3-Flash NVFP4 Serverless](https://img.shields.io/badge/Deploy-Serverless%20GLM--5.3--Flash-00A67E?style=for-the-badge)](https://console.runpod.io/deploy?template=nxl09wfv94&ref=km0th85l)
 
 Public, secret-free vLLM worker images and RunPod templates for GLM models.
 
@@ -88,7 +89,11 @@ ghcr.io/utensil/worker-vllm-glm@sha256:3f31ef919c98ad370f4bfdddafd6f20ae92f1208f
 The Serverless endpoint cold start and request paths remain **unvalidated until
 the independent live gates below pass**.
 
-## Serverless candidate (not yet live-validated)
+## Public Serverless template (endpoint not yet live-validated)
+
+The public template is named `GLM-5.3-Flash-NVFP4 (Public Serverless 1xB300
+TP1)` and currently has template ID `nxl09wfv94`. Template IDs can change if a
+public template is replaced; prefer the name when auditing an account.
 
 The `serverless` Docker target starts the same pinned GLM vLLM server on
 loopback, waits for `/health`, and only then registers its RunPod queue handler.
