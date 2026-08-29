@@ -239,8 +239,14 @@ cache. It resolves only snapshot revision
 `36c184c6cda000a481711306df5adde42f63321a`; if that exact local snapshot is
 missing, the worker exits instead of downloading at runtime.
 
-After the cached image digest and template are published, attach the exact
-model reference when creating the endpoint with runpodctl 2.4.0 or newer:
+The cached image is pinned to the published Linux/amd64 manifest:
+
+```text
+ghcr.io/utensil/worker-vllm-glm@sha256:577394a87422627b322d7c64bb3d589fd5a9b2f1d25bda87e7048a1855364669
+```
+
+Attach the exact model reference when creating the endpoint with runpodctl
+2.4.0 or newer:
 
 ```bash
 runpodctl serverless create \
