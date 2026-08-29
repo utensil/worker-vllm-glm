@@ -217,6 +217,12 @@ Serverless image and `IMAGE` is replaced by that immutable digest,
 persisted field. It does not alter the existing B300 template or create an
 endpoint.
 
+The published B200/TP2 Serverless image is pinned at:
+
+```text
+ghcr.io/utensil/worker-vllm-glm@sha256:7a39b66b69597bddfc06106d3c74daf959b447c48b9cc1c46b0b45bfbcc9e529
+```
+
 ## Build
 
 GitHub Actions tests every change. Image-source changes build the default `pod`

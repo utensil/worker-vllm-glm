@@ -1,6 +1,5 @@
 import copy
 import unittest
-from unittest import mock
 
 import create_serverless_b200_template as template
 
@@ -47,9 +46,12 @@ class ServerlessB200TemplateTest(unittest.TestCase):
         self.assertNotIn("HF_TOKEN", value["env"])
         self.assertNotIn("RUNPOD_API_KEY", value["env"])
 
-    def test_creation_locked_until_candidate_tag_is_replaced_by_digest(self):
+    def test_creation_requires_published_digest(self):
         with self.assertRaisesRegex(SystemExit, "published digest"):
-            template.create_or_reuse(template.payload(), "redacted", mock.Mock())
+            template.common.require_immutable_image(
+                "ghcr.io/utensil/worker-vllm-glm:serverless-candidate"
+            )
+        template.common.require_immutable_image(template.IMAGE)
 
     def test_exact_count2_b200_gate_and_endpoint(self):
         session = FakeSession([gpu("NVIDIA B200"), gpu("NVIDIA B300 SXM6 AC")])

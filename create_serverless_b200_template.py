@@ -19,7 +19,10 @@ import requests
 
 import create_serverless_template as common
 
-IMAGE = "ghcr.io/utensil/worker-vllm-glm:glm-5.3-flash-nvfp4-serverless-b200-tp2-v1"
+IMAGE = (
+    "ghcr.io/utensil/worker-vllm-glm@"
+    "sha256:7a39b66b69597bddfc06106d3c74daf959b447c48b9cc1c46b0b45bfbcc9e529"
+)
 NAME = "GLM-5.3-Flash-NVFP4 (Public Serverless 2xB200 TP2)"
 GPU_TYPE_ID = "NVIDIA B200"
 GPU_COUNT = 2
