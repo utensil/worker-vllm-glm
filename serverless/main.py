@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 logging.basicConfig(
@@ -20,6 +21,7 @@ logging.basicConfig(
 LOGGER = logging.getLogger(__name__)
 MODEL = "RedHatAI/GLM-5.3-Flash-NVFP4"
 REVISION = "36c184c6cda000a481711306df5adde42f63321a"
+CACHE_ROOT = Path("/runpod-volume/huggingface-cache/hub")
 HOST = "127.0.0.1"
 PORT = 8000
 HEALTH_POLL_SECONDS = 2.0
@@ -50,19 +52,43 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
     return value
 
 
+def _strict_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    if raw in {"1", "true"}:
+        return True
+    if raw in {"0", "false"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")
+
+
+def resolve_model_source() -> tuple[str, bool]:
+    """Return the exact model source and whether a Hub revision is required."""
+    if not _strict_bool("RUNPOD_MODEL_CACHE_REQUIRED"):
+        return MODEL, True
+    cache_root = Path(os.getenv("RUNPOD_MODEL_CACHE_ROOT", str(CACHE_ROOT)))
+    snapshot = (
+        cache_root / "models--RedHatAI--GLM-5.3-Flash-NVFP4" / "snapshots" / REVISION
+    )
+    required = (snapshot / "config.json", snapshot / "model.safetensors.index.json")
+    if not snapshot.is_dir() or not all(path.is_file() for path in required):
+        raise RuntimeError("exact pinned RunPod cached-model snapshot is unavailable")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    return str(snapshot), False
+
+
 def build_vllm_argv() -> list[str]:
     tensor_parallel_size = _bounded_int("TENSOR_PARALLEL_SIZE", 1, 1, 8)
     max_model_len = _bounded_int("MAX_MODEL_LEN", 8192, 1024, 131072)
     max_num_seqs = _bounded_int("MAX_NUM_SEQS", 2, 1, 64)
     gpu_memory = _bounded_float("GPU_MEMORY_UTILIZATION", 0.90, 0.50, 0.98)
-    return [
+    model_source, needs_revision = resolve_model_source()
+    argv = [
         sys.executable,
         "-m",
         "vllm.entrypoints.openai.api_server",
         "--model",
-        MODEL,
-        "--revision",
-        REVISION,
+        model_source,
         "--served-model-name",
         MODEL,
         "--host",
@@ -84,6 +110,9 @@ def build_vllm_argv() -> list[str]:
         "--reasoning-parser",
         "glm45",
     ]
+    if needs_revision:
+        argv[5:5] = ["--revision", REVISION]
+    return argv
 
 
 def startup_timeout_seconds() -> int:

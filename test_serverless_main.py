@@ -1,6 +1,8 @@
 import subprocess
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from serverless import main
@@ -52,6 +54,57 @@ class ServerlessMainTest(unittest.TestCase):
         with mock.patch.dict(main.os.environ, {"TENSOR_PARALLEL_SIZE": "2"}):
             argv = main.build_vllm_argv()
         self.assertIn("--tensor-parallel-size 2", " ".join(argv))
+
+    def test_cached_command_requires_and_uses_exact_pinned_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = (
+                Path(tmp)
+                / "models--RedHatAI--GLM-5.3-Flash-NVFP4"
+                / "snapshots"
+                / main.REVISION
+            )
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").touch()
+            (snapshot / "model.safetensors.index.json").touch()
+            with mock.patch.dict(
+                main.os.environ,
+                {
+                    "RUNPOD_MODEL_CACHE_REQUIRED": "true",
+                    "RUNPOD_MODEL_CACHE_ROOT": tmp,
+                },
+                clear=False,
+            ):
+                argv = main.build_vllm_argv()
+                self.assertEqual(argv[argv.index("--model") + 1], str(snapshot))
+                self.assertNotIn("--revision", argv)
+                self.assertEqual(main.os.environ["HF_HUB_OFFLINE"], "1")
+                self.assertEqual(main.os.environ["TRANSFORMERS_OFFLINE"], "1")
+
+    def test_cached_command_never_falls_back_to_hub(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(
+                main.os.environ,
+                {
+                    "RUNPOD_MODEL_CACHE_REQUIRED": "1",
+                    "RUNPOD_MODEL_CACHE_ROOT": tmp,
+                },
+                clear=False,
+            ),
+            self.assertRaisesRegex(RuntimeError, "exact pinned"),
+        ):
+            main.build_vllm_argv()
+
+    def test_cached_command_rejects_ambiguous_boolean(self):
+        with (
+            mock.patch.dict(
+                main.os.environ,
+                {"RUNPOD_MODEL_CACHE_REQUIRED": "sometimes"},
+                clear=False,
+            ),
+            self.assertRaisesRegex(RuntimeError, "must be true or false"),
+        ):
+            main.build_vllm_argv()
 
     def test_command_rejects_invalid_tensor_parallel_size(self):
         for value in ("0", "9", "two"):
