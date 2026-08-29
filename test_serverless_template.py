@@ -41,6 +41,7 @@ class ServerlessTemplateTest(unittest.TestCase):
         self.assertIs(value["isServerless"], True)
         self.assertEqual(value["ports"], [])
         self.assertEqual(value["volumeInGb"], 0)
+        self.assertEqual(value["volumeMountPath"], "/workspace")
         self.assertEqual(value["dockerStartCmd"], [])
         self.assertEqual(value["env"]["RUNPOD_INIT_TIMEOUT"], "1800")
         self.assertEqual(value["env"]["VLLM_STARTUP_TIMEOUT"], "1800")
