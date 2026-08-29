@@ -201,8 +201,15 @@ The B200 endpoint renderer fails closed unless a live catalog query for exactly
 two `NVIDIA B200` GPUs admits CUDA 13.0, a Serverless pool, a positive finite
 price, and `LOW`, `MEDIUM`, or `HIGH` availability. It pins count 2, excludes
 every other type in the selected pool, permits only one worker, and never falls
-back to another GPU count or type. TP2 remains unproven until its bounded live
-cold-start, model-list, and chat checks pass.
+back to another GPU count or type. The published public template ID is
+`gi0zrqredm`.
+
+A bounded live check on 2026-08-30 admitted exactly two B200 GPUs and reached a
+ready worker after approximately 36.4 minutes. The queued `/v1/models` request
+did not complete before the 38.5-minute request deadline, so chat and negative
+route checks were not run. The temporary endpoint was deleted and fresh absence
+was verified. This is startup/placement evidence only, not an end-to-end
+Serverless API feasibility result.
 
 No-spend render and exact live-catalog check:
 
