@@ -13,6 +13,7 @@ class PublicArtifactTest(unittest.TestCase):
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
         })
         self.assertEqual(value["ports"], ["8000/http"])
+        self.assertRegex(value["imageName"], r"^ghcr\.io/.+@sha256:[0-9a-f]{64}$")
         self.assertIn(template.MODEL, value["dockerStartCmd"][0])
         self.assertIn(template.REVISION, value["dockerStartCmd"][0])
 

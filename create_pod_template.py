@@ -10,7 +10,10 @@ import requests
 
 REST = "https://rest.runpod.io/v1"
 GRAPHQL = "https://api.runpod.io/graphql"
-IMAGE = "ghcr.io/utensil/worker-vllm-glm:glm-5.3-flash-nvfp4-v1"
+IMAGE = (
+    "ghcr.io/utensil/worker-vllm-glm@"
+    "sha256:8a025ed9775fd57dcd66ec11d80296401e2609afcda483ed64345bc4a3328816"
+)
 MODEL = "RedHatAI/GLM-5.3-Flash-NVFP4"
 REVISION = "36c184c6cda000a481711306df5adde42f63321a"
 NAME = "GLM-5.3-Flash-NVFP4 (vLLM 1xB300 TP1)"
