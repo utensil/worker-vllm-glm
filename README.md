@@ -79,12 +79,113 @@ tool-use, long-context, concurrency, cost-efficiency, or optimized-production
 evaluation.
 
 This repository currently publishes a **Pod** image/template only. The vLLM HTTP
-server is not a RunPod Serverless queue worker; Serverless needs a separate
-handler-compatible image and independent worker/cold-start validation.
+server has passed its Pod feasibility smoke. A separate Serverless queue-worker
+target now exists, but its image, public template, endpoint cold start, and
+request paths remain **candidate artifacts until the independent live gates
+below pass**.
+
+## Serverless candidate (not yet live-validated)
+
+The `serverless` Docker target starts the same pinned GLM vLLM server on
+loopback, waits for `/health`, and only then registers its RunPod queue handler.
+It supports these OpenAI routes, including SSE for chat/text completions:
+
+- `/v1/chat/completions`
+- `/v1/completions`
+- `/v1/models`
+
+The handler accepts RunPod's `openai_route` / `openai_input` passthrough and the
+native `messages` or `prompt` shorthand. Routes, methods, body size, model name,
+backend liveness, startup time, and request time are checked fail-closed. SSE
+chunks are forwarded for streaming jobs. Tool definitions and remote image-URL
+message content pass through without being rewritten; their model behavior is
+not claimed until the live acceptance gate. The handler is an async generator
+and uses `aiohttp`, so the configured two in-flight jobs do not block each
+other's event-loop progress. A post-health watchdog terminates the worker if
+the owned vLLM child exits after queue registration.
+
+The process ownership and queue-proxy pattern is grounded in official RunPod
+[`worker-vllm` commit `84a6b5e8`](https://github.com/runpod-workers/worker-vllm/commit/84a6b5e8fc9f7beb4def70b823706262e047b315).
+This repository does **not** inherit that worker's vLLM 0.28 base. Both Docker
+targets continue from this repository's GLM-specific digest-pinned base and
+fail-closed processor patch.
+
+The desired hardware remains exactly **1 x NVIDIA B300 SXM6 AC at TP1**. RunPod
+Serverless endpoint APIs select GPU pools, which can contain multiple GPU types.
+The template itself does not select hardware, so template publication/readback
+is independent of current GPU stock. Before any endpoint action,
+`create_serverless_template.py --check-gpu` reads the current Serverless GPU
+catalog and requires the exact B300 type to have a Serverless pool, price,
+non-`NONE` availability, and an available CUDA 13.0 placement. It constructs
+exclusions for every other type in that pool and pins CUDA 13.0. It never
+substitutes B200, changes to TP2, or creates an endpoint.
+
+**Current endpoint blocker (2026-08-29 catalog readback):** exact
+`NVIDIA B300 SXM6 AC` has `pool=null`, no Serverless price, and availability
+`NONE`; CUDA 13.0 and 13.2 are listed but unavailable. The public template can
+still be published after its image digest is pinned, but exact-B300 live
+validation cannot start until the mandatory read-only gate passes.
+
+The public template candidate is volume-free with a 300 GB ephemeral container
+disk. This preserves maximum placement availability and matches the proved
+direct-download path. A network volume or RunPod cached model should be adopted
+only after a measured cold-start comparison; a volume adds storage cost and
+restricts workers to its data center.
+
+Both initialization gates are set to 1,800 seconds, above the measured 922.7s
+Pod cold start:
+
+```text
+RUNPOD_INIT_TIMEOUT=1800
+VLLM_STARTUP_TIMEOUT=1800
+```
+
+The backend request timeout is 600 seconds. Endpoint policy is separate from a
+template: use job TTL of at least 3,600 seconds so provisioning and model load
+fit. The first bounded validation must use a temporary endpoint with
+`workersMin=0`, `workersMax=1`, queue-delay scaling at 1 second, FlashBoot,
+300-second idle timeout, and REST v2 `timeout` of 1,800,000 ms. The renderer
+validates the exact allowed top-level and nested key sets before printing it.
+
+Local, no-spend checks:
+
+```bash
+python3 -m pip install requests -r serverless/requirements.txt
+python3 -m unittest discover -v
+python3 create_serverless_template.py
+docker build --target serverless -t worker-vllm-glm:serverless-candidate .
+```
+
+`create_serverless_template.py --create` is deliberately locked until CI has
+published the separate Serverless image and the script's image constant is
+replaced with its immutable digest. Once pinned, `--create` creates or reuses
+the public Serverless template and reads back every persisted field. It does
+not require GPU stock, create an endpoint, or start compute.
+
+Endpoint preflight is separate and mandatory:
+
+```bash
+export RUNPOD_API_KEY=...  # keep this out of shell history and source control
+python3 create_serverless_template.py --check-gpu
+python3 create_serverless_template.py \
+  --render-temporary-endpoint PUBLIC_TEMPLATE_ID
+```
+
+The second command is render-only. It carries the admitted pool, exclusions of
+all other current pool members, one GPU, and CUDA 13.0 directly into the bounded
+endpoint payload. Both commands currently fail closed at the exact-B300 gate.
+
+Live acceptance requires separate approval and evidence: anonymous digest pull;
+public template readback; a temporary endpoint with `workersMin=0`; one bounded
+cold start, model listing, chat completion, and negative request; endpoint
+deletion; and a fresh absence check. Until then, this repository makes no
+Serverless deployment, quality, latency, throughput, or cost claim.
 
 ## Build
 
-GitHub Actions tests every change. Image-source changes build `linux/amd64` and
-publish both `latest` and the versioned convenience tag to GHCR. Deployment uses
-the digest above. The repository and package must remain public so RunPod can
-pull the image without registry credentials.
+GitHub Actions tests every change. Image-source changes build the default `pod`
+target and the separate `serverless` target for `linux/amd64`. Pod tags remain
+`latest` and `glm-5.3-flash-nvfp4-v1`; the Serverless target uses
+`glm-5.3-flash-nvfp4-serverless-v1`. Deployment uses immutable digests. The
+repository and package must remain public so RunPod can pull either image
+without registry credentials.
