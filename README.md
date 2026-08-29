@@ -39,9 +39,9 @@ python3 create_pod_template.py --create    # create/reuse + verify
 ghcr.io/utensil/worker-vllm-glm@sha256:8a025ed9775fd57dcd66ec11d80296401e2609afcda483ed64345bc4a3328816
 ```
 
-The public template pins this exact image digest. The human-readable release tag
-is `glm-5.3-flash-nvfp4-v1`. The Dockerfile derives from a pinned vLLM amd64
-digest. Its pinned GLM5
+The public template pins this exact image digest. The mutable convenience tag is
+`glm-5.3-flash-nvfp4-v1`; deployment should use the digest. The Dockerfile
+derives from a pinned vLLM amd64 digest. Its pinned GLM5
 processor implementation incorrectly opens `processor_config.json` as a local
 path when the model is a Hugging Face repository. The image applies the tested
 Hub-aware `cached_file` lookup at build time. The patch asserts one exact source
@@ -84,6 +84,7 @@ handler-compatible image and independent worker/cold-start validation.
 
 ## Build
 
-GitHub Actions builds `linux/amd64` and publishes both `latest` and the versioned
-release tag to GHCR. Deployment uses the digest above. The repository and package
-must remain public so RunPod can pull the image without registry credentials.
+GitHub Actions tests every change. Image-source changes build `linux/amd64` and
+publish both `latest` and the versioned convenience tag to GHCR. Deployment uses
+the digest above. The repository and package must remain public so RunPod can
+pull the image without registry credentials.
